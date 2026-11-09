@@ -90,6 +90,15 @@ static inline uint16_t fast_patch_pid(uint16_t orig) {
 // ==============================================================================
 // 纯净 DarkPods 深色逻辑 + 100% 绝对 0 闪白 + 系统级 Taptic Engine Peek 清脆震感 (1519)
 // ==============================================================================
+
+// 私有类接口声明（仅供编译期解析，运行时仍为消息转发，行为不变）
+@interface PRXCardSlideUpPresentationController : UIPresentationController
+@end
+
+@interface PGS_TitleViewStub : NSObject
+- (void)setTitleText:(id)text;
+@end
+
 %group darkpods_hook_grp
 
 static NSTimeInterval s_last_haptic_time = 0;
@@ -123,7 +132,7 @@ static inline void PGS_TriggerHapticFeedback(void) {
 	%orig;
 	if (titleView && [titleView respondsToSelector:@selector(text)] && [titleView respondsToSelector:@selector(setTitleText:)]) {
 		id text = [titleView text];
-		[titleView setTitleText:text];
+		[(PGS_TitleViewStub *)titleView setTitleText:text];
 	}
 	// 每次弹窗配置标题时，精准触发线性马达轻微清脆震动！
 	PGS_TriggerHapticFeedback();
