@@ -26,21 +26,13 @@ struct product_id_map_entry {
 	// [minimum_ios, maximum_ios] 闭区间
 };
 
-// 预设产品映射表
+// 预设产品映射表（映射规则同步自 shyj1990/PodsGrant-IOS17-Airpods4-ANC-RootHide）
 static const struct product_id_map_entry product_id_map_preset[] = {
-	{8212, 8206, 0, 15},   // AirPods Pro 2 Lightning -> AirPods Pro (iOS <= 15)
-	{8217, 8207, 0, 255},  // Beats Fit Pro -> AirPods 2
-	{8219, 8206, 0, 15},   // AirPods 4 -> AirPods Pro (iOS <= 15)
-	{8228, 8206, 0, 15},   // AirPods Pro 2 USB-C -> AirPods Pro (iOS <= 15)
-	{8231, 8206, 0, 15},   // AirPods Pro 3 / Max Refreshed -> AirPods Pro (iOS <= 15)
-	{8232, 8206, 0, 15},   // AirPods Pro 3 / ANC -> AirPods Pro (iOS <= 15)
-	{8228, 8212, 16, 255}, // AirPods Pro 2 USB-C -> AirPods Pro 2 Lightning (iOS >= 16)
-	{8219, 8212, 16, 255}, // AirPods 4 -> AirPods Pro 2 Lightning (iOS >= 16)
-	{8231, 8212, 16, 255}, // AirPods Pro 3 -> AirPods Pro 2 Lightning (iOS >= 16)
-	{8232, 8212, 16, 255}, // AirPods Pro 3 -> AirPods Pro 2 Lightning (iOS >= 16)
-	{8221, 8203, 0, 16},   // Beats Studio Buds Plus -> Powerbeats Pro
-	{8211, 8207, 0, 255},  // AirPods 3 -> AirPods 2
-	{8214, 8209, 0, 255},  // Beats Studio Buds -> Beats Solo Pro
+	// 映射表按顺序首个命中即返回；目标 ID 不得再出现在本表 original 列（避免二次改写）
+	{8240, 8211, 0, 255}, // AirPods 5 (Wireless Charging Case) → AirPods 3（默认首选）
+	{8240, 8212, 0, 255}, // AirPods 5 (Wireless Charging Case) → AirPods Pro 2 Lightning（备用；仅当上面的 8211 条目删除后才生效）
+	{8246, 8211, 0, 255}, // AirPods 5 → AirPods 3
+	{8219, 8211, 0, 255}, // AirPods 4 ANC → AirPods 3
 	{0, 0, 0, 0}
 };
 

@@ -1,4 +1,4 @@
-name: Build PodsGrant Enhanced
+name: Build PodsGrant Enhanced (roothide)
 
 on:
   push:
@@ -6,27 +6,52 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  build-roothide:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out
+        uses: actions/checkout@v7
 
-      - name: Install Theos
-        uses: Randomblock1/theos-action@v1
+      - name: Cache theos
+        id: cache-theos
+        uses: actions/cache@v6
         with:
-          theos-dir: ${{ github.workspace }}/theos
+          key: pg-theos-cache1
+          path: ~/theos
 
-      - name: Build Rootless Package
+      - name: Install theos, etc.
+        if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
-          make clean
-          make package FINALPACKAGE=1 DEBUG=0 THEOS_PACKAGE_SCHEME=rootless
-          ls -la packages/
+          git clone https://github.com/theos/theos.git -q --depth 1 --recursive ~/theos
+          cd ~/theos && rm -rf sdks && git clone https://github.com/theos/sdks.git -q --depth 1
+          curl -sL https://github.com/kabiroberai/swift-toolchain-linux/releases/download/v2.3.0/swift-5.8-ubuntu20.04.tar.xz | tar -xJf - -C ~/theos/toolchain/
+          cd ~/theos && git clone https://github.com/p0358/allemande --depth 1 && cd allemande && g++ -std=c++20 -o allemande main.cpp
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Install roothide theos
+        run: |
+          git clone https://github.com/roothide/theos.git -q --depth 1 --recursive ~/theos-roothide
+          rm -rf ~/theos-roothide/sdks ~/theos-roothide/toolchain
+          ln -s ~/theos/sdks ~/theos-roothide/sdks
+          ln -s ~/theos/toolchain ~/theos-roothide/toolchain
+          # Apply the allemande fix: the Linux clang emits old-ABI arm64e
+          # slices which crash arm64e processes (Settings) on iOS 15/16.
+          sed -i 's/$(ECHO_MERGING)$(ECHO_UNBUFFERED)$(TARGET_LIPO) $(foreach ARCH,$(TARGET_ARCHS),-arch $(ARCH) $(THEOS_OBJ_DIR)\/$(ARCH)\/$(1)) -create -output "$$@"$(ECHO_END)/\0\nifeq ($(THEOS_PACKAGE_SCHEME),roothide)\nifneq ($(filter arm64e,$(TARGET_ARCHS)),)\n\t~\/theos\/allemande\/allemande "$$@"\nendif\nendif/' ~/theos-roothide/makefiles/instance/rules.mk
+
+      - name: Build roothide package
+        run: |
+          export THEOS=~/theos-roothide
+          make clean
+          make -j2 package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+          ls -la packages/
+          mv packages/com.lns.pogr_*.deb packages/ROOTHIDE-PodsGrant-Enhanced.deb
+
+      - name: Upload roothide package
+        uses: actions/upload-artifact@v7
         with:
-          name: PodsGrant-Enhanced-Rootless
-          path: packages/*.deb
+          name: ROOTHIDE-PodsGrant-Enhanced-${{ github.sha }}
+          path: packages/ROOTHIDE-PodsGrant-Enhanced.deb
+          if-no-files-found: error
+          retention-days: 90
