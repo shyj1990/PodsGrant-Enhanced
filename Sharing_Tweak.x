@@ -156,6 +156,17 @@ static NSString *PGS_displayNameForPid(int pid) {
 
 %end
 
+// 私有类接口声明（仅供编译期解析，运行时仍为消息转发，行为不变）
+@interface CBProductInfo : NSObject
++ (id)productInfoWithProductID:(unsigned int)pid;
+- (NSString *)productName;
+@end
+
+@interface BluetoothDevice : NSObject
+- (unsigned int)productId;
+- (id)productName;
+@end
+
 // ==============================================================================
 // CBProductInfo 兜底：CoreBluetooth.framework 内置静态产品表（PID → productName/
 // model，如 0x2013=AirPods 3、0x2014=Pro 2 Lightning、0x201B=AirPods 4 ANC）。
