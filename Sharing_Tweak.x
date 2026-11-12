@@ -100,10 +100,10 @@ static inline uint16_t fast_patch_pid(uint16_t orig) {
 @end
 
 // ==============================================================================
-// 型号名称兜底：老系统缺少新耳机（如 PID 8240）的 Localizable-PID_<pid> 本地化时，
-// 「设置 → 蓝牙 → 关于」等界面的型号名称会退化为通用 "AirPods"。
-// 按系统本地化 key（PRODUCT_NAME_PID_<n>）与表名（Localizable-PID_<n>）精确拦截，
-// 仅当系统查询失败（原样返回 key/value）且 PID 命中下表时才替换；系统已有名称一律不动。
+// 型号名称兜底：AirPods 详情页（设置→蓝牙→ⓘ 的「关于」组）由 HeadphoneConfigs
+// framework 的 BTSDeviceConfigController 渲染，「型号名称」行调用 -getModelName:。
+// 诊断实测（v1.1.9~v1.2.0）：本机命中路径即此处，收到的 pid 是 PodsGrant 映射后的
+// 目标值（8211），orig 为通用兜底名 "AirPods"，故需要映射反查 + 兜底名检测。
 // ==============================================================================
 static const struct { unsigned int pid; const char *name; } s_pid_display_names[] = {
 	{8240, "AirPods 5（无线充电）"},
@@ -131,7 +131,7 @@ static NSString *PGS_displayNameForPid(int pid) {
 // 诊断日志实测（v1.1.9）：HPS getModelName 收到的 pid=8211、orig=AirPods，
 // 证实此路径需要反查 + 通用兜底名检测。
 static const struct { unsigned int target_pid; unsigned int source_pid; } s_pid_mapping_presets[] = {
-	{8211, 8240}, // AirPods 5 (Wireless Charging Case) -> AirPods 3（默认首选）
+	{8211, 8240}, // AirPods 5（无线充电） -> AirPods 3（默认首选）
 	{8211, 8246}, // AirPods 5 -> AirPods 3
 	{8211, 8219}, // AirPods 4 ANC -> AirPods 3
 	{0, 0},
@@ -147,135 +147,14 @@ static NSString *PGS_displayNameForMappedPid(int target_pid) {
 	return nil;
 }
 
-// 系统的通用兜底名：DeviceConfig/CBProductInfo 等查询失败时 UI 退化为 "AirPods"，
+// 系统的通用兜底名：查询失败时 UI 退化为 "AirPods"，
 // 真实 AirPods 1/2 的合法型号名也是它（已知限制：会一并改名）。
 static BOOL PGS_isGenericAirPodsName(id orig) {
 	return [orig isKindOfClass:[NSString class]] && [(NSString *)orig isEqualToString:@"AirPods"];
 }
 
-%group pidname_hook_grp
-
-%hookf(CFStringRef, CFBundleCopyLocalizedString, CFBundleRef bundle, CFStringRef key, CFStringRef value, CFStringRef tableName) {
-	CFStringRef orig = %orig;
-	NSString *nsKey = (__bridge NSString *)key;
-	NSString *nsTable = (__bridge NSString *)tableName;
-	NSString *nsOrig = (__bridge NSString *)orig;
-	NSString *nsValue = (__bridge NSString *)value;
-	if (!nsKey || ![nsKey isKindOfClass:[NSString class]] || ![nsKey hasPrefix:@"PRODUCT_NAME_PID_"]) {
-		return orig;
-	}
-	if (!nsTable || ![nsTable isKindOfClass:[NSString class]] || ![nsTable hasPrefix:@"Localizable-PID_"]) {
-		return orig;
-	}
-	// 查询失败时 CFBundleCopyLocalizedString 返回 value（若提供）或 key 原样
-	BOOL missed = (nsOrig == nil) ||
-		(nsValue != nil && [nsOrig isEqualToString:nsValue]) ||
-		[nsOrig isEqualToString:nsKey];
-	if (!missed) {
-		return orig;
-	}
-	int pid = atoi([[nsKey substringFromIndex:17] UTF8String]); // strlen("PRODUCT_NAME_PID_") == 17
-	NSString *name = PGS_displayNameForPid(pid);
-	if (name) {
-		return (__bridge_retained CFStringRef)name;
-	}
-	return orig;
-}
-
-%end
-
-// 私有类接口声明（仅供编译期解析，运行时仍为消息转发，行为不变）
-@interface CBProductInfo : NSObject
-+ (id)productInfoWithProductID:(unsigned int)pid;
-- (NSString *)productName;
-@end
-
-@interface BluetoothDevice : NSObject
-- (unsigned int)productId;
-- (id)productName;
-@end
-
-// ==============================================================================
-// CBProductInfo 兜底：CoreBluetooth.framework 内置静态产品表（PID → productName/
-// model，如 0x2013=AirPods 3、0x2014=Pro 2 Lightning、0x201B=AirPods 4 ANC）。
-// 未知 PID（如 8240/8246）系统会返回字段全空的 Invalid 条目，UI 拿不到
-// productName 就退化为广播名 "AirPods"（设置 → 蓝牙 → 关于页的「型号名称」）。
-// 拦截 +productInfoWithProductID:，仅当 PID 命中下表且系统未提供名称时，
-// 用 KVC 填充 productName（不触碰系统已有的任何条目）。
-// ==============================================================================
-%group cbproductinfo_hook_grp
-
-%hook CBProductInfo
-+ (id)productInfoWithProductID:(unsigned int)pid {
-	id info = %orig;
-	NSString *name = PGS_displayNameForPid((int)pid);
-	if (!info || !name) {
-		return info;
-	}
-	@try {
-		NSString *pn = [info productName];
-		if (pn == nil || pn.length == 0) {
-			[info setValue:name forKey:@"productName"];
-		}
-	} @catch (NSException *e) {
-		// KVC 失败（类结构变化）时静默跳过，不影响原逻辑
-	}
-	return info;
-}
-%end
-
-%end
-
-// ==============================================================================
-// BluetoothDevice 兜底：BluetoothManager.framework 的设备对象（设置页蓝牙设备
-// 详情使用）。productName 为空且 PID 命中下表时返回自定义名称。
-// ==============================================================================
-%group btdevice_hook_grp
-
-%hook BluetoothDevice
-- (id)productName {
-	id orig = %orig;
-	NSString *name = PGS_displayNameForPid((int)[self productId]);
-	if (!name) {
-		name = PGS_displayNameForMappedPid((int)[self productId]);
-	}
-	if (!name) {
-		return orig;
-	}
-	BOOL missed = (orig == nil) ||
-		(![orig isKindOfClass:[NSString class]]) ||
-		([(NSString *)orig length] == 0) ||
-		PGS_isGenericAirPodsName(orig);
-	return missed ? name : orig;
-}
-%end
-
-%end
-
-// ==============================================================================
-// 诊断日志（仅 Preferences 进程启用）：名称解析路径的观测数据，便于迭代定位。
-// 输出到 /var/mobile/Documents/podsgrant_diag.txt，每次启动设置覆盖重写。
-// ==============================================================================
-static FILE *s_diag_file = NULL;
-
-static void PGS_diag(NSString *fmt, ...) {
-	if (!s_diag_file) return;
-	@try {
-		va_list args;
-		va_start(args, fmt);
-		NSString *line = [[NSString alloc] initWithFormat:fmt arguments:args];
-		va_end(args);
-		fprintf(s_diag_file, "%s\n", [line UTF8String]);
-		fflush(s_diag_file);
-	} @catch (NSException *e) {}
-}
-
 // 私有类接口声明（仅供编译期解析，运行时仍为消息转发，行为不变）
 @interface BTSDeviceConfigController : NSObject
-@end
-
-@interface EAAccessory : NSObject
-- (NSString *)modelNumber;
 @end
 
 // ==============================================================================
@@ -315,33 +194,6 @@ static void PGS_diag(NSString *fmt, ...) {
 	if (name && missed) {
 		result = name;
 	}
-	PGS_diag(@"[HPS] getModelName: pid=%u orig=%@ result=%@", pid, orig, result);
-	return result;
-}
-%end
-
-%end
-
-// ==============================================================================
-// ExternalAccessory 兜底：「设置→通用→关于本机」的配件页型号名称来自
-// EAAccessory.modelNumber（耳机经 iAP2 上报的 ProductModelNumber）。
-// 老系统与未识别耳机上会退化为通用 "AirPods"——仅当值恰好等于 "AirPods"
-// 且 PID 表命中时替换；真实 AirPods 1/2 的 modelNumber 也是 "AirPods"，
-// 若同时连接旧款耳机则会一并改名（已知限制）。
-// ==============================================================================
-%group ea_hook_grp
-
-%hook EAAccessory
-- (NSString *)modelNumber {
-	NSString *orig = %orig;
-	NSString *result = orig;
-	if (orig && [orig isEqualToString:@"AirPods"]) {
-		NSString *name = PGS_displayNameForPid(8240);
-		if (name) {
-			result = name;
-		}
-	}
-	PGS_diag(@"[EA] modelNumber: %@ -> %@", orig, result);
 	return result;
 }
 %end
@@ -420,31 +272,11 @@ static inline void PGS_TriggerHapticFeedback(void) {
 	uint32_t len = sizeof(exec_path);
 	_NSGetExecutablePath(exec_path, &len);
 
-	// 所有注入进程（含 Settings/设置、bluetoothd）都启用型号名称兜底
-	%init(pidname_hook_grp);
-	%init(cbproductinfo_hook_grp);
-	%init(btdevice_hook_grp);
-
-	// 仅设置进程：HeadphoneConfigs 关于页与 EA 关于本机兜底 + 诊断日志
+	// 仅设置进程：HeadphoneConfigs 关于页「型号名称」兜底（实测唯一有效路径）
 	if (strstr(exec_path, "Preferences") != NULL) {
 		if (NSClassFromString(@"BTSDeviceConfigController")) {
 			%init(headphoneconfigs_hook_grp);
 		}
-		if (NSClassFromString(@"EAAccessory")) {
-			%init(ea_hook_grp);
-		}
-		@try {
-			s_diag_file = fopen("/var/mobile/Documents/podsgrant_diag.txt", "w");
-			if (s_diag_file) {
-				fprintf(s_diag_file, "=== PodsGrant diag %s ===\n", exec_path);
-				fprintf(s_diag_file, "classes: HPS=%d EA=%d CBProductInfo=%d BTDevice=%d\n",
-					NSClassFromString(@"BTSDeviceConfigController") != nil,
-					NSClassFromString(@"EAAccessory") != nil,
-					NSClassFromString(@"CBProductInfo") != nil,
-					NSClassFromString(@"BluetoothDevice") != nil);
-				fflush(s_diag_file);
-			}
-		} @catch (NSException *e) {}
 	}
 
 	// 若处于弹窗渲染服务 (SharingViewService)，激活绝对 0 闪白深色模式与 Taptic Engine
