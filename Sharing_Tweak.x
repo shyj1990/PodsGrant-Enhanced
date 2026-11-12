@@ -156,6 +156,59 @@ static NSString *PGS_displayNameForPid(int pid) {
 
 %end
 
+// ==============================================================================
+// CBProductInfo 兜底：CoreBluetooth.framework 内置静态产品表（PID → productName/
+// model，如 0x2013=AirPods 3、0x2014=Pro 2 Lightning、0x201B=AirPods 4 ANC）。
+// 未知 PID（如 8240/8246）系统会返回字段全空的 Invalid 条目，UI 拿不到
+// productName 就退化为广播名 "AirPods"（设置 → 蓝牙 → 关于页的「型号名称」）。
+// 拦截 +productInfoWithProductID:，仅当 PID 命中下表且系统未提供名称时，
+// 用 KVC 填充 productName（不触碰系统已有的任何条目）。
+// ==============================================================================
+%group cbproductinfo_hook_grp
+
+%hook CBProductInfo
++ (id)productInfoWithProductID:(unsigned int)pid {
+	id info = %orig;
+	NSString *name = PGS_displayNameForPid((int)pid);
+	if (!info || !name) {
+		return info;
+	}
+	@try {
+		NSString *pn = [info productName];
+		if (pn == nil || pn.length == 0) {
+			[info setValue:name forKey:@"productName"];
+		}
+	} @catch (NSException *e) {
+		// KVC 失败（类结构变化）时静默跳过，不影响原逻辑
+	}
+	return info;
+}
+%end
+
+%end
+
+// ==============================================================================
+// BluetoothDevice 兜底：BluetoothManager.framework 的设备对象（设置页蓝牙设备
+// 详情使用）。productName 为空且 PID 命中下表时返回自定义名称。
+// ==============================================================================
+%group btdevice_hook_grp
+
+%hook BluetoothDevice
+- (id)productName {
+	id orig = %orig;
+	NSString *name = PGS_displayNameForPid((int)[self productId]);
+	if (!name) {
+		return orig;
+	}
+	if (orig == nil || ([orig isKindOfClass:[NSString class]] && [(NSString *)orig length] == 0)) {
+		return name;
+	}
+	return orig;
+}
+%end
+
+%end
+
 %group darkpods_hook_grp
 
 static NSTimeInterval s_last_haptic_time = 0;
@@ -230,6 +283,8 @@ static inline void PGS_TriggerHapticFeedback(void) {
 
 	// 所有注入进程（含 Settings/设置、bluetoothd）都启用型号名称兜底
 	%init(pidname_hook_grp);
+	%init(cbproductinfo_hook_grp);
+	%init(btdevice_hook_grp);
 
 	// 若处于弹窗渲染服务 (SharingViewService)，激活绝对 0 闪白深色模式与 Taptic Engine
 	if (strstr(exec_path, "SharingViewService") != NULL) {
