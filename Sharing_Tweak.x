@@ -125,6 +125,34 @@ static NSString *PGS_displayNameForPid(int pid) {
 	return nil;
 }
 
+// PodsGrant 映射预设（对应 general.h 的 product_id_map_preset）：源设备 PID 会被
+// 改写为目标 PID，因此系统内看到的设备 PID 是映射后的目标值（如 8211），
+// 名称表里查不到——按目标 PID 反查映射源设备（首个命中）的显示名称。
+// 诊断日志实测（v1.1.9）：HPS getModelName 收到的 pid=8211、orig=AirPods，
+// 证实此路径需要反查 + 通用兜底名检测。
+static const struct { unsigned int target_pid; unsigned int source_pid; } s_pid_mapping_presets[] = {
+	{8211, 8240}, // AirPods 5 (Wireless Charging Case) -> AirPods 3（默认首选）
+	{8211, 8246}, // AirPods 5 -> AirPods 3
+	{8211, 8219}, // AirPods 4 ANC -> AirPods 3
+	{0, 0},
+};
+
+static NSString *PGS_displayNameForMappedPid(int target_pid) {
+	if (target_pid <= 0) return nil;
+	for (int i = 0; s_pid_mapping_presets[i].target_pid; i++) {
+		if ((unsigned int)target_pid == s_pid_mapping_presets[i].target_pid) {
+			return PGS_displayNameForPid((int)s_pid_mapping_presets[i].source_pid);
+		}
+	}
+	return nil;
+}
+
+// 系统的通用兜底名：DeviceConfig/CBProductInfo 等查询失败时 UI 退化为 "AirPods"，
+// 真实 AirPods 1/2 的合法型号名也是它（已知限制：会一并改名）。
+static BOOL PGS_isGenericAirPodsName(id orig) {
+	return [orig isKindOfClass:[NSString class]] && [(NSString *)orig isEqualToString:@"AirPods"];
+}
+
 %group pidname_hook_grp
 
 %hookf(CFStringRef, CFBundleCopyLocalizedString, CFBundleRef bundle, CFStringRef key, CFStringRef value, CFStringRef tableName) {
@@ -209,12 +237,16 @@ static NSString *PGS_displayNameForPid(int pid) {
 	id orig = %orig;
 	NSString *name = PGS_displayNameForPid((int)[self productId]);
 	if (!name) {
+		name = PGS_displayNameForMappedPid((int)[self productId]);
+	}
+	if (!name) {
 		return orig;
 	}
-	if (orig == nil || ([orig isKindOfClass:[NSString class]] && [(NSString *)orig length] == 0)) {
-		return name;
-	}
-	return orig;
+	BOOL missed = (orig == nil) ||
+		(![orig isKindOfClass:[NSString class]]) ||
+		([(NSString *)orig length] == 0) ||
+		PGS_isGenericAirPodsName(orig);
+	return missed ? name : orig;
 }
 %end
 
@@ -270,8 +302,17 @@ static void PGS_diag(NSString *fmt, ...) {
 		}
 	} @catch (NSException *e) {}
 	NSString *name = PGS_displayNameForPid((int)pid);
+	if (!name) {
+		// PID 已被 PodsGrant 映射改写（实测 pid=8211）：反查映射源设备名称
+		name = PGS_displayNameForMappedPid((int)pid);
+	}
 	NSString *result = orig;
-	if (name && (orig == nil || ([orig isKindOfClass:[NSString class]] && [(NSString *)orig length] <= 1))) {
+	// 查询失败判定：返回空/极短，或恰为系统通用兜底名 "AirPods"（v1.1.9 日志实测 orig=AirPods）
+	BOOL missed = (orig == nil) ||
+		(![orig isKindOfClass:[NSString class]]) ||
+		([(NSString *)orig length] <= 1) ||
+		PGS_isGenericAirPodsName(orig);
+	if (name && missed) {
 		result = name;
 	}
 	PGS_diag(@"[HPS] getModelName: pid=%u orig=%@ result=%@", pid, orig, result);

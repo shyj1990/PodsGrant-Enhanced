@@ -1,6 +1,6 @@
 Package: com.lns.pogr
 Name: AirPods PodsGrant
-Version: 1.1.9
+Version: 1.2.0
 Architecture: iphoneos-arm64
 Description: 提高低系统与新 AirPods 兼容性 (终极 0 闪白 + 系统级 Taptic 马达震感)
  · 彻底杜绝冷启动露白：在转场控制器将容器背景设为完全透明，彻底消灭第 98~99 帧出现的浅色闪烁！
