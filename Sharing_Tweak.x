@@ -106,7 +106,7 @@ static inline uint16_t fast_patch_pid(uint16_t orig) {
 // 仅当系统查询失败（原样返回 key/value）且 PID 命中下表时才替换；系统已有名称一律不动。
 // ==============================================================================
 static const struct { unsigned int pid; const char *name; } s_pid_display_names[] = {
-	{8240, "AirPods 5 (Wireless Charging Case)"},
+	{8240, "AirPods 5（无线充电）"},
 	{8246, "AirPods 5"},
 	{8219, "AirPods 4 ANC"},
 	{8212, "AirPods Pro 2 Lightning"},
