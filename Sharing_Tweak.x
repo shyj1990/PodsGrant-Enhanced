@@ -99,6 +99,63 @@ static inline uint16_t fast_patch_pid(uint16_t orig) {
 - (void)setTitleText:(id)text;
 @end
 
+// ==============================================================================
+// 型号名称兜底：老系统缺少新耳机（如 PID 8240）的 Localizable-PID_<pid> 本地化时，
+// 「设置 → 蓝牙 → 关于」等界面的型号名称会退化为通用 "AirPods"。
+// 按系统本地化 key（PRODUCT_NAME_PID_<n>）与表名（Localizable-PID_<n>）精确拦截，
+// 仅当系统查询失败（原样返回 key/value）且 PID 命中下表时才替换；系统已有名称一律不动。
+// ==============================================================================
+static const struct { unsigned int pid; const char *name; } s_pid_display_names[] = {
+	{8240, "AirPods 5 (Wireless Charging Case)"},
+	{8246, "AirPods 5"},
+	{8219, "AirPods 4 ANC"},
+	{8212, "AirPods Pro 2 Lightning"},
+	{8228, "AirPods Pro 2 USB-C"},
+	{8231, "AirPods Pro 3"},
+	{8232, "AirPods Pro 3 ANC"},
+	{0, NULL},
+};
+
+static NSString *PGS_displayNameForPid(int pid) {
+	for (int i = 0; s_pid_display_names[i].name; i++) {
+		if (pid > 0 && (unsigned int)pid == s_pid_display_names[i].pid) {
+			return [NSString stringWithUTF8String:s_pid_display_names[i].name];
+		}
+	}
+	return nil;
+}
+
+%group pidname_hook_grp
+
+%hookf(CFStringRef, CFBundleCopyLocalizedString, CFBundleRef bundle, CFStringRef key, CFStringRef value, CFStringRef tableName) {
+	CFStringRef orig = %orig;
+	NSString *nsKey = (__bridge NSString *)key;
+	NSString *nsTable = (__bridge NSString *)tableName;
+	NSString *nsOrig = (__bridge NSString *)orig;
+	NSString *nsValue = (__bridge NSString *)value;
+	if (!nsKey || ![nsKey isKindOfClass:[NSString class]] || ![nsKey hasPrefix:@"PRODUCT_NAME_PID_"]) {
+		return orig;
+	}
+	if (!nsTable || ![nsTable isKindOfClass:[NSString class]] || ![nsTable hasPrefix:@"Localizable-PID_"]) {
+		return orig;
+	}
+	// 查询失败时 CFBundleCopyLocalizedString 返回 value（若提供）或 key 原样
+	BOOL missed = (nsOrig == nil) ||
+		(nsValue != nil && [nsOrig isEqualToString:nsValue]) ||
+		[nsOrig isEqualToString:nsKey];
+	if (!missed) {
+		return orig;
+	}
+	int pid = atoi([[nsKey substringFromIndex:17] UTF8String]); // strlen("PRODUCT_NAME_PID_") == 17
+	NSString *name = PGS_displayNameForPid(pid);
+	if (name) {
+		return (__bridge_retained CFStringRef)name;
+	}
+	return orig;
+}
+
+%end
+
 %group darkpods_hook_grp
 
 static NSTimeInterval s_last_haptic_time = 0;
@@ -170,6 +227,9 @@ static inline void PGS_TriggerHapticFeedback(void) {
 	char exec_path[512] = {0};
 	uint32_t len = sizeof(exec_path);
 	_NSGetExecutablePath(exec_path, &len);
+
+	// 所有注入进程（含 Settings/设置、bluetoothd）都启用型号名称兜底
+	%init(pidname_hook_grp);
 
 	// 若处于弹窗渲染服务 (SharingViewService)，激活绝对 0 闪白深色模式与 Taptic Engine
 	if (strstr(exec_path, "SharingViewService") != NULL) {
