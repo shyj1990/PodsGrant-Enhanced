@@ -261,9 +261,12 @@ static void PGS_diag(NSString *fmt, ...) {
 	unsigned int pid = 0;
 	@try {
 		id dev = [self valueForKey:@"device"]; // KVC 命中 ivar _device
-		id classic = [dev respondsToSelector:@selector(classicDevice)] ? [dev classicDevice] : nil;
+		id classic = nil;
+		if ([dev respondsToSelector:@selector(classicDevice)]) {
+			classic = ((id (*)(id, SEL))objc_msgSend)(dev, @selector(classicDevice));
+		}
 		if (classic && [classic respondsToSelector:@selector(productId)]) {
-			pid = [classic productId];
+			pid = ((unsigned int (*)(id, SEL))objc_msgSend)(classic, @selector(productId));
 		}
 	} @catch (NSException *e) {}
 	NSString *name = PGS_displayNameForPid((int)pid);
