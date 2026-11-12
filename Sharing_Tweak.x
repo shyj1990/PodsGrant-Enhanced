@@ -220,6 +220,90 @@ static NSString *PGS_displayNameForPid(int pid) {
 
 %end
 
+// ==============================================================================
+// 诊断日志（仅 Preferences 进程启用）：名称解析路径的观测数据，便于迭代定位。
+// 输出到 /var/mobile/Documents/podsgrant_diag.txt，每次启动设置覆盖重写。
+// ==============================================================================
+static FILE *s_diag_file = NULL;
+
+static void PGS_diag(NSString *fmt, ...) {
+	if (!s_diag_file) return;
+	@try {
+		va_list args;
+		va_start(args, fmt);
+		NSString *line = [[NSString alloc] initWithFormat:fmt arguments:args];
+		va_end(args);
+		fprintf(s_diag_file, "%s\n", [line UTF8String]);
+		fflush(s_diag_file);
+	} @catch (NSException *e) {}
+}
+
+// 私有类接口声明（仅供编译期解析，运行时仍为消息转发，行为不变）
+@interface BTSDeviceConfigController : NSObject
+@end
+
+@interface EAAccessory : NSObject
+- (NSString *)modelNumber;
+@end
+
+// ==============================================================================
+// HeadphoneConfigs 兜底：AirPods 详情页（设置→蓝牙→ⓘ 的「关于」组）由
+// HeadphoneConfigs.framework 的 BTSDeviceConfigController 渲染，「型号名称」
+// 行调用 -getModelName:：按 key ACCESSORY_MODEL_NAME_<pid-0x2000> 查
+// DeviceConfig 本地化表（各型号还有 DeviceConfig-B6xx 等专属表）。
+// iOS 17 表中没有 8240/8246（key 缺失）→ 返回 nil。PID 命中下表且返回空时填充。
+// ==============================================================================
+%group headphoneconfigs_hook_grp
+
+%hook BTSDeviceConfigController
+- (id)getModelName:(id)a3 {
+	id orig = %orig;
+	unsigned int pid = 0;
+	@try {
+		id dev = [self valueForKey:@"device"]; // KVC 命中 ivar _device
+		id classic = [dev respondsToSelector:@selector(classicDevice)] ? [dev classicDevice] : nil;
+		if (classic && [classic respondsToSelector:@selector(productId)]) {
+			pid = [classic productId];
+		}
+	} @catch (NSException *e) {}
+	NSString *name = PGS_displayNameForPid((int)pid);
+	NSString *result = orig;
+	if (name && (orig == nil || ([orig isKindOfClass:[NSString class]] && [(NSString *)orig length] <= 1))) {
+		result = name;
+	}
+	PGS_diag(@"[HPS] getModelName: pid=%u orig=%@ result=%@", pid, orig, result);
+	return result;
+}
+%end
+
+%end
+
+// ==============================================================================
+// ExternalAccessory 兜底：「设置→通用→关于本机」的配件页型号名称来自
+// EAAccessory.modelNumber（耳机经 iAP2 上报的 ProductModelNumber）。
+// 老系统与未识别耳机上会退化为通用 "AirPods"——仅当值恰好等于 "AirPods"
+// 且 PID 表命中时替换；真实 AirPods 1/2 的 modelNumber 也是 "AirPods"，
+// 若同时连接旧款耳机则会一并改名（已知限制）。
+// ==============================================================================
+%group ea_hook_grp
+
+%hook EAAccessory
+- (NSString *)modelNumber {
+	NSString *orig = %orig;
+	NSString *result = orig;
+	if (orig && [orig isEqualToString:@"AirPods"]) {
+		NSString *name = PGS_displayNameForPid(8240);
+		if (name) {
+			result = name;
+		}
+	}
+	PGS_diag(@"[EA] modelNumber: %@ -> %@", orig, result);
+	return result;
+}
+%end
+
+%end
+
 %group darkpods_hook_grp
 
 static NSTimeInterval s_last_haptic_time = 0;
@@ -296,6 +380,28 @@ static inline void PGS_TriggerHapticFeedback(void) {
 	%init(pidname_hook_grp);
 	%init(cbproductinfo_hook_grp);
 	%init(btdevice_hook_grp);
+
+	// 仅设置进程：HeadphoneConfigs 关于页与 EA 关于本机兜底 + 诊断日志
+	if (strstr(exec_path, "Preferences") != NULL) {
+		if (NSClassFromString(@"BTSDeviceConfigController")) {
+			%init(headphoneconfigs_hook_grp);
+		}
+		if (NSClassFromString(@"EAAccessory")) {
+			%init(ea_hook_grp);
+		}
+		@try {
+			s_diag_file = fopen("/var/mobile/Documents/podsgrant_diag.txt", "w");
+			if (s_diag_file) {
+				fprintf(s_diag_file, "=== PodsGrant diag %s ===\n", exec_path);
+				fprintf(s_diag_file, "classes: HPS=%d EA=%d CBProductInfo=%d BTDevice=%d\n",
+					NSClassFromString(@"BTSDeviceConfigController") != nil,
+					NSClassFromString(@"EAAccessory") != nil,
+					NSClassFromString(@"CBProductInfo") != nil,
+					NSClassFromString(@"BluetoothDevice") != nil);
+				fflush(s_diag_file);
+			}
+		} @catch (NSException *e) {}
+	}
 
 	// 若处于弹窗渲染服务 (SharingViewService)，激活绝对 0 闪白深色模式与 Taptic Engine
 	if (strstr(exec_path, "SharingViewService") != NULL) {
